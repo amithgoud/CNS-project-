@@ -14,6 +14,7 @@
 #include <pthread.h>
 #include <sqlite3.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -34,7 +35,22 @@ static const char SCHEMA[] =
     "  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
     "  expires_at  INTEGER NOT NULL"
     ");"
-    "CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);";
+    "CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);"
+    "CREATE TABLE IF NOT EXISTS queries ("
+    "  id           INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  student_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+    "  question     TEXT    NOT NULL,"
+    "  state        TEXT    NOT NULL DEFAULT 'PENDING_LLM' CHECK (state IN"
+    "                 ('PENDING_LLM', 'LLM_ANSWERED', 'TEACHER_APPROVED',"
+    "                  'TEACHER_EDITED', 'DELIVERED')),"
+    "  llm_answer   TEXT,"
+    "  final_answer TEXT,"
+    "  teacher_id   INTEGER REFERENCES users(id),"
+    "  created_at   INTEGER NOT NULL,"
+    "  updated_at   INTEGER NOT NULL"
+    ");"
+    "CREATE INDEX IF NOT EXISTS idx_queries_student ON queries(student_id, id);"
+    "CREATE INDEX IF NOT EXISTS idx_queries_state   ON queries(state, id);";
 
 int db_open(const char *path)
 {
@@ -253,4 +269,246 @@ int db_session_delete(const char *token)
 int db_session_purge(long long now)
 {
     return exec_simple("DELETE FROM sessions WHERE expires_at <= ?", NULL, now, 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Queries                                                            */
+/* ------------------------------------------------------------------ */
+
+static const char *const QSTATE_NAMES[Q_STATE_COUNT] = {
+    "PENDING_LLM", "LLM_ANSWERED", "TEACHER_APPROVED", "TEACHER_EDITED", "DELIVERED",
+};
+
+const char *qstate_name(qstate_t s)
+{
+    return ((int)s >= 0 && (int)s < Q_STATE_COUNT) ? QSTATE_NAMES[s] : "UNKNOWN";
+}
+
+static qstate_t qstate_parse(const char *s)
+{
+    for (int i = 0; i < Q_STATE_COUNT; i++)
+        if (strcmp(s, QSTATE_NAMES[i]) == 0)
+            return (qstate_t)i;
+    return Q_PENDING_LLM;
+}
+
+int qstate_has_answer(qstate_t s)
+{
+    return s >= Q_TEACHER_APPROVED;
+}
+
+void query_free(query_t *q)
+{
+    free(q->question);
+    free(q->llm_answer);
+    free(q->final_answer);
+    q->question = q->llm_answer = q->final_answer = NULL;
+}
+
+void query_list_free(query_t *list, int n)
+{
+    for (int i = 0; i < n; i++)
+        query_free(&list[i]);
+    free(list);
+}
+
+/* Heap copy of a text column, or NULL if the column is NULL. */
+static char *dup_text(sqlite3_stmt *st, int col)
+{
+    const unsigned char *t = sqlite3_column_text(st, col);
+    return t ? strdup((const char *)t) : NULL;
+}
+
+/* Every query SELECT uses these columns in this order (see read_query). */
+#define QUERY_COLUMNS \
+    "SELECT q.id, q.student_id, su.username, q.teacher_id, tu.username, "  \
+    "q.state, q.question, q.llm_answer, q.final_answer, "                  \
+    "q.created_at, q.updated_at "                                          \
+    "FROM queries q JOIN users su ON su.id = q.student_id "                \
+    "LEFT JOIN users tu ON tu.id = q.teacher_id "
+
+static void read_query(sqlite3_stmt *st, query_t *q)
+{
+    char state[32];
+
+    memset(q, 0, sizeof *q);
+    q->id         = sqlite3_column_int64(st, 0);
+    q->student_id = sqlite3_column_int64(st, 1);
+    copy_text(st, 2, q->student_name, sizeof q->student_name);
+    q->teacher_id = sqlite3_column_int64(st, 3);    /* NULL reads as 0 */
+    copy_text(st, 4, q->teacher_name, sizeof q->teacher_name);
+    copy_text(st, 5, state, sizeof state);
+    q->state        = qstate_parse(state);
+    q->question     = dup_text(st, 6);
+    q->llm_answer   = dup_text(st, 7);
+    q->final_answer = dup_text(st, 8);
+    q->created_at   = sqlite3_column_int64(st, 9);
+    q->updated_at   = sqlite3_column_int64(st, 10);
+}
+
+long long db_query_create(long long student_id, const char *question)
+{
+    sqlite3_stmt *st = NULL;
+    long long rc = -1;
+    sqlite3_int64 now = (sqlite3_int64)time(NULL);
+
+    pthread_mutex_lock(&db_lock);
+    if (prepare("INSERT INTO queries (student_id, question, state, created_at, updated_at) "
+                "VALUES (?, ?, 'PENDING_LLM', ?, ?)", &st) < 0)
+        goto out;
+
+    sqlite3_bind_int64(st, 1, student_id);
+    sqlite3_bind_text(st, 2, question, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, now);
+    sqlite3_bind_int64(st, 4, now);
+
+    if (sqlite3_step(st) == SQLITE_DONE)
+        rc = sqlite3_last_insert_rowid(db);
+    else
+        log_error("db: create query: %s", sqlite3_errmsg(db));
+out:
+    sqlite3_finalize(st);
+    pthread_mutex_unlock(&db_lock);
+    return rc;
+}
+
+int db_query_get(long long id, query_t *out)
+{
+    sqlite3_stmt *st = NULL;
+    int rc = -1;
+
+    pthread_mutex_lock(&db_lock);
+    if (prepare(QUERY_COLUMNS "WHERE q.id = ?", &st) < 0)
+        goto out;
+
+    sqlite3_bind_int64(st, 1, id);
+
+    int s = sqlite3_step(st);
+    if (s == SQLITE_ROW) {
+        read_query(st, out);
+        rc = 1;
+    } else if (s == SQLITE_DONE) {
+        rc = 0;
+    } else {
+        log_error("db: get query: %s", sqlite3_errmsg(db));
+    }
+out:
+    sqlite3_finalize(st);
+    pthread_mutex_unlock(&db_lock);
+    return rc;
+}
+
+int db_query_list_by_student(long long student_id, int max, query_t **out)
+{
+    sqlite3_stmt *st = NULL;
+    int n = -1;
+
+    *out = NULL;
+    query_t *list = calloc((size_t)max, sizeof *list);
+    if (!list)
+        return -1;
+
+    pthread_mutex_lock(&db_lock);
+    if (prepare(QUERY_COLUMNS "WHERE q.student_id = ? ORDER BY q.id DESC LIMIT ?", &st) < 0)
+        goto out;
+
+    sqlite3_bind_int64(st, 1, student_id);
+    sqlite3_bind_int(st, 2, max);
+
+    n = 0;
+    int s = SQLITE_DONE;
+    while (n < max && (s = sqlite3_step(st)) == SQLITE_ROW)
+        read_query(st, &list[n++]);
+    if (n < max && s != SQLITE_DONE) {
+        log_error("db: list queries: %s", sqlite3_errmsg(db));
+        query_list_free(list, n);
+        list = NULL;
+        n = -1;
+    }
+out:
+    sqlite3_finalize(st);
+    pthread_mutex_unlock(&db_lock);
+    if (n < 0)
+        free(list);
+    else
+        *out = list;
+    return n;
+}
+
+int db_query_count_by_state(long long counts[Q_STATE_COUNT])
+{
+    sqlite3_stmt *st = NULL;
+    int rc = -1;
+
+    for (int i = 0; i < Q_STATE_COUNT; i++)
+        counts[i] = 0;
+
+    pthread_mutex_lock(&db_lock);
+    if (prepare("SELECT state, COUNT(*) FROM queries GROUP BY state", &st) < 0)
+        goto out;
+
+    int s;
+    while ((s = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *name = sqlite3_column_text(st, 0);
+        if (name)
+            counts[qstate_parse((const char *)name)] = sqlite3_column_int64(st, 1);
+    }
+    if (s == SQLITE_DONE)
+        rc = 0;
+    else
+        log_error("db: count queries: %s", sqlite3_errmsg(db));
+out:
+    sqlite3_finalize(st);
+    pthread_mutex_unlock(&db_lock);
+    return rc;
+}
+
+int db_query_ids_by_state(qstate_t state, long long *ids, int max)
+{
+    sqlite3_stmt *st = NULL;
+    int n = -1;
+
+    pthread_mutex_lock(&db_lock);
+    if (prepare("SELECT id FROM queries WHERE state = ? ORDER BY id LIMIT ?", &st) < 0)
+        goto out;
+
+    sqlite3_bind_text(st, 1, qstate_name(state), -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, max);
+
+    n = 0;
+    int s = SQLITE_DONE;
+    while (n < max && (s = sqlite3_step(st)) == SQLITE_ROW)
+        ids[n++] = sqlite3_column_int64(st, 0);
+    if (n < max && s != SQLITE_DONE) {
+        log_error("db: ids by state: %s", sqlite3_errmsg(db));
+        n = -1;
+    }
+out:
+    sqlite3_finalize(st);
+    pthread_mutex_unlock(&db_lock);
+    return n;
+}
+
+int db_query_set_llm_answer(long long id, const char *answer)
+{
+    sqlite3_stmt *st = NULL;
+    int rc = -1;
+
+    pthread_mutex_lock(&db_lock);
+    if (prepare("UPDATE queries SET llm_answer = ?, state = 'LLM_ANSWERED', updated_at = ? "
+                "WHERE id = ? AND state = 'PENDING_LLM'", &st) < 0)
+        goto out;
+
+    sqlite3_bind_text(st, 1, answer, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)time(NULL));
+    sqlite3_bind_int64(st, 3, id);
+
+    if (sqlite3_step(st) == SQLITE_DONE)
+        rc = sqlite3_changes(db) > 0 ? 1 : 0;
+    else
+        log_error("db: set llm answer: %s", sqlite3_errmsg(db));
+out:
+    sqlite3_finalize(st);
+    pthread_mutex_unlock(&db_lock);
+    return rc;
 }

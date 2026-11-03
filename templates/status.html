@@ -10,6 +10,30 @@
 </section>
 
 <section class="card">
+  <h2>Questions by state</h2>
+  <table class="kv">
+    <tr><th><code>PENDING_LLM</code></th><td>{{q_pending}}</td></tr>
+    <tr><th><code>LLM_ANSWERED</code></th><td>{{q_llm}}</td></tr>
+    <tr><th><code>TEACHER_APPROVED</code></th><td>{{q_approved}}</td></tr>
+    <tr><th><code>TEACHER_EDITED</code></th><td>{{q_edited}}</td></tr>
+    <tr><th><code>DELIVERED</code></th><td>{{q_delivered}}</td></tr>
+  </table>
+</section>
+
+<section class="card">
+  <h2>LLM drafting</h2>
+  <table class="kv">
+    <tr><th>Provider</th><td><code>{{llm_provider}}</code></td></tr>
+    <tr><th>Model</th><td><code>{{llm_model}}</code></td></tr>
+    <tr><th>Endpoint</th><td><code>{{llm_endpoint}}</code></td></tr>
+    <tr><th>Waiting in queue</th><td>{{llm_queued}}</td></tr>
+    <tr><th>Workers busy</th><td>{{llm_busy}}</td></tr>
+  </table>
+  <p class="muted">Here the server is also an HTTP <em>client</em>: background threads send each question to the
+  LLM as an HTTP POST with a JSON body (libcurl) and parse the JSON reply (cJSON).</p>
+</section>
+
+<section class="card">
   <h2>This refresh</h2>
   <table class="kv">
     <tr><th>Connection number</th><td>#{{conn_id}}</td></tr>

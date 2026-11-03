@@ -1,0 +1,22 @@
+<p class="crumbs"><a href="/student">&larr; My questions</a></p>
+
+<section class="card ask-card">
+  <h1>Ask a question</h1>
+  <p class="muted">Be specific: say what you tried and where you got stuck.</p>
+  {{{alert}}}
+  <form method="post" action="/ask">
+    <label for="question">Your question</label>
+    <textarea id="question" name="question" rows="8" maxlength="{{maxlen}}" required autofocus>{{question}}</textarea>
+    <p class="hint">{{rules}}</p>
+    <button type="submit">Send question</button>
+  </form>
+</section>
+
+<section class="card ask-card explain">
+  <h2>What happens when you press Send</h2>
+  <ol>
+    <li>Your browser opens a TCP connection and sends <code>POST /ask</code>, with your question URL-encoded in the body.</li>
+    <li>The server checks your session cookie, saves the question in SQLite with state <code>PENDING_LLM</code>, and answers <code>302 Found</code>.</li>
+    <li>Your browser follows the redirect to the question's page, which polls the server every few seconds for progress.</li>
+  </ol>
+</section>

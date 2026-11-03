@@ -1,14 +1,23 @@
-<h1>Welcome, {{username}}</h1>
-<p class="lead">This is your student dashboard. Here you will submit questions and follow their answers.</p>
+<div class="page-head">
+  <div>
+    <h1>My questions</h1>
+    <p class="lead">Hi {{username}}. Ask anything about the course; an AI drafts an answer and a teacher checks it before it reaches you.</p>
+  </div>
+  <a class="button" href="/ask">Ask a question</a>
+</div>
 
 <section class="card">
-  <h2>My questions</h2>
-  <p class="muted">Asking questions arrives in the next build step. Each question will move through
-  PENDING_LLM &rarr; LLM_ANSWERED &rarr; TEACHER_APPROVED / EDITED &rarr; DELIVERED.</p>
+  <table class="list">
+    <thead><tr><th>#</th><th>Question</th><th>Status</th><th>Last update</th></tr></thead>
+    <tbody>
+{{{rows}}}
+    </tbody>
+  </table>
+  <p class="muted refresh-note">{{refresh_note}}</p>
 </section>
 
-<section class="card">
-  <h2>Your session</h2>
+<details class="card session-details">
+  <summary>Your session (how the server knows it's you)</summary>
   <table class="kv">
     <tr><th>Logged in as</th><td>{{username}} <span class="role-tag">{{role}}</span></td></tr>
     <tr><th>Cookie</th><td><code>{{cookie_name}}={{token_preview}}</code></td></tr>
@@ -17,6 +26,5 @@
   <p class="muted">HTTP itself has no memory between requests. The server knows it is you because your
   browser sends this cookie with every request. The token is 256 random bits, stored in the server's
   <code>sessions</code> table, and expires after {{ttl}} seconds. Try opening
-  <a href="/teacher">/teacher</a>: you will get <code>403 Forbidden</code>, because you are not a teacher.
-  On <a href="/inspect">Inspect request</a> you can see the <code>Cookie</code> header your browser sends.</p>
-</section>
+  <a href="/teacher">/teacher</a>: you will get <code>403 Forbidden</code>, because you are not a teacher.</p>
+</details>

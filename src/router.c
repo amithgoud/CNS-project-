@@ -10,8 +10,10 @@
  *   GET/POST /login     log in (sets the session cookie)
  *   GET/POST /register  create a student account
  *   POST /logout      end the session (clears the cookie)
- *   GET  /student     student dashboard   (students only)
- *   GET  /teacher     teacher dashboard   (teachers only)
+ *   GET  /student     student dashboard: my questions   (students only)
+ *   GET/POST /ask       ask a new question                (students only)
+ *   GET  /query?id=N  one question and its progress     (its owner, or teachers)
+ *   GET  /teacher     teacher dashboard                 (teachers only)
  *
  * Access control is decided here, in one place, from the route table:
  * a handler marked ACCESS_TEACHER is never even called for a student.
@@ -19,6 +21,7 @@
 #include "router.h"
 #include "auth.h"
 #include "config.h"
+#include "llm.h"
 #include "log.h"
 #include "strbuf.h"
 #include "template.h"
@@ -38,6 +41,7 @@
 #define ACCESS_PUBLIC  0    /* anyone */
 #define ACCESS_STUDENT 1    /* logged in with role student */
 #define ACCESS_TEACHER 2    /* logged in with role teacher */
+#define ACCESS_USER    3    /* logged in, any role */
 
 /* s is the logged-in user's session, or NULL for a visitor. */
 typedef int (*handler_fn)(const conn_t *c, const http_request_t *req,
@@ -231,6 +235,18 @@ static int h_status(const conn_t *c, const http_request_t *req, const session_t 
     localtime_r(&t, &tm);
     strftime(now, sizeof now, "%H:%M:%S", &tm);
 
+    long long counts[Q_STATE_COUNT];
+    char qc[Q_STATE_COUNT][24];
+    db_query_count_by_state(counts);    /* all zero on error */
+    for (int i = 0; i < Q_STATE_COUNT; i++)
+        snprintf(qc[i], sizeof qc[i], "%lld", counts[i]);
+
+    llm_status_t ls;
+    llm_get_status(&ls);
+    char llm_queued[16], llm_busy[32];
+    snprintf(llm_queued, sizeof llm_queued, "%d", ls.queued);
+    snprintf(llm_busy, sizeof llm_busy, "%d / %d", ls.busy, ls.workers);
+
     tpl_var_t vars[] = {
         { "uptime",      uptime },
         { "active",      active },
@@ -241,6 +257,16 @@ static int h_status(const conn_t *c, const http_request_t *req, const session_t 
         { "client_port", port },
         { "conn_id",     id },
         { "now",         now },
+        { "q_pending",   qc[Q_PENDING_LLM] },
+        { "q_llm",       qc[Q_LLM_ANSWERED] },
+        { "q_approved",  qc[Q_TEACHER_APPROVED] },
+        { "q_edited",    qc[Q_TEACHER_EDITED] },
+        { "q_delivered", qc[Q_DELIVERED] },
+        { "llm_provider", ls.provider },
+        { "llm_model",    ls.model },
+        { "llm_endpoint", ls.endpoint },
+        { "llm_queued",   llm_queued },
+        { "llm_busy",     llm_busy },
     };
     return send_page(c->fd, 200, s, "Server status", "status.html",
                      vars, sizeof vars / sizeof vars[0],
@@ -397,48 +423,346 @@ static int h_logout(const conn_t *c, const http_request_t *req, const session_t 
 /* Dashboards                                                         */
 /* ------------------------------------------------------------------ */
 
-static int render_dashboard(const conn_t *c, const session_t *s,
-                            const char *title, const char *tpl)
+/* Session details shown on the dashboards. */
+typedef struct {
+    char expires[64];
+    char remaining[32];
+    char token_preview[24];
+    char ttl[16];
+} session_view_t;
+
+static void session_view(const session_t *s, session_view_t *v)
 {
-    char expires[64], remaining[32], token_preview[24];
     time_t exp = (time_t)s->expires_at;
     struct tm tm;
     localtime_r(&exp, &tm);
-    strftime(expires, sizeof expires, "%H:%M:%S", &tm);
+    strftime(v->expires, sizeof v->expires, "%H:%M:%S", &tm);
 
     long left = (long)(s->expires_at - (long long)time(NULL));
     if (left < 0)
         left = 0;
-    snprintf(remaining, sizeof remaining, "%ld min %02ld s", left / 60, left % 60);
+    snprintf(v->remaining, sizeof v->remaining, "%ld min %02ld s", left / 60, left % 60);
 
     /* Only show the start of the token; it is a secret. */
-    snprintf(token_preview, sizeof token_preview, "%.12s...", s->token);
+    snprintf(v->token_preview, sizeof v->token_preview, "%.12s...", s->token);
+    snprintf(v->ttl, sizeof v->ttl, "%d", SESSION_TTL_SEC);
+}
 
-    char ttl[16];
-    snprintf(ttl, sizeof ttl, "%d", SESSION_TTL_SEC);
+static void fmt_time(long long t, char *out, size_t outsz)
+{
+    time_t tt = (time_t)t;
+    struct tm tm;
+    localtime_r(&tt, &tm);
+    strftime(out, outsz, "%d %b %Y, %H:%M", &tm);
+}
+
+/* What each state means in plain words. Students are not told an AI
+ * draft exists until a teacher has checked it. */
+static const char *state_label(qstate_t st, role_t viewer)
+{
+    switch (st) {
+    case Q_PENDING_LLM:      return "Waiting for AI draft";
+    case Q_LLM_ANSWERED:     return viewer == ROLE_TEACHER ? "AI draft ready for review"
+                                                           : "Being reviewed by a teacher";
+    case Q_TEACHER_APPROVED: return "Answered";
+    case Q_TEACHER_EDITED:   return "Answered (edited by teacher)";
+    case Q_DELIVERED:        return "Delivered";
+    default:                 return "Unknown";
+    }
+}
+
+static void state_badge(strbuf_t *sb, qstate_t st, role_t viewer)
+{
+    sb_printf(sb, "<span class=\"state state-%d\" title=\"%s\">%s</span>",
+              (int)st, qstate_name(st), state_label(st, viewer));
+}
+
+/* Escaped first `max` bytes of text, cut on a UTF-8 character boundary
+ * (continuation bytes look like 10xxxxxx). */
+static void excerpt(strbuf_t *sb, const char *text, size_t max)
+{
+    if (strlen(text) <= max) {
+        sb_append_html(sb, text);
+        return;
+    }
+    while (max > 0 && ((unsigned char)text[max] & 0xC0) == 0x80)
+        max--;
+    char *cut = strndup(text, max);
+    if (cut) {
+        sb_append_html(sb, cut);
+        free(cut);
+    }
+    sb_puts(sb, "&hellip;");
+}
+
+/* Progress bar for a question: 4 steps, everything up to the current
+ * state marked done. */
+static void build_stepper(strbuf_t *sb, qstate_t st)
+{
+    static const char *const labels[4] = {
+        "Submitted", "AI draft written", "Teacher reviewed", "Delivered",
+    };
+    static const char *const codes[4] = {
+        "PENDING_LLM", "LLM_ANSWERED", "TEACHER_APPROVED / TEACHER_EDITED", "DELIVERED",
+    };
+    int cur = st == Q_PENDING_LLM  ? 0
+            : st == Q_LLM_ANSWERED ? 1
+            : st == Q_DELIVERED    ? 3
+            : 2;
+
+    sb_puts(sb, "<ol class=\"stepper\">");
+    for (int i = 0; i < 4; i++)
+        sb_printf(sb, "<li class=\"%s\"><span class=\"dot\">%d</span>"
+                      "<span class=\"label\">%s</span><code>%s</code></li>",
+                  i < cur ? "done" : i == cur ? "done current" : "todo",
+                  i + 1, labels[i], codes[i]);
+    sb_puts(sb, "</ol>");
+}
+
+/* Student dashboard: list of my questions. While any is still open the
+ * page polls the server with meta-refresh. */
+static int h_student(const conn_t *c, const http_request_t *req, const session_t *s)
+{
+    (void)req;
+    query_t *list;
+    int n = db_query_list_by_student(s->user.id, STUDENT_LIST_LIMIT, &list);
+    if (n < 0)
+        return http_send_error(c->fd, 500, NULL, "Could not load your questions.");
+
+    strbuf_t rows;
+    sb_init(&rows);
+    int open = 0;
+    for (int i = 0; i < n; i++) {
+        const query_t *q = &list[i];
+        char when[64];
+        if (!qstate_has_answer(q->state))
+            open++;
+        fmt_time(q->updated_at, when, sizeof when);
+        sb_printf(&rows, "<tr><td class=\"num\">#%lld</td><td><a href=\"/query?id=%lld\">",
+                  q->id, q->id);
+        excerpt(&rows, q->question ? q->question : "", 90);
+        sb_puts(&rows, "</a></td><td>");
+        state_badge(&rows, q->state, ROLE_STUDENT);
+        sb_printf(&rows, "</td><td class=\"muted\">%s</td></tr>\n", when);
+    }
+    if (n == 0)
+        sb_puts(&rows, "<tr><td colspan=\"4\" class=\"empty\">"
+                       "You have not asked any questions yet.</td></tr>");
+    query_list_free(list, n);
+
+    char head[96] = "", note[160] = "";
+    if (open > 0) {
+        snprintf(head, sizeof head, "<meta http-equiv=\"refresh\" content=\"%d\">",
+                 POLL_LIST_SEC);
+        snprintf(note, sizeof note, "%d question%s still open. This page asks the server "
+                 "for updates every %d seconds.", open, open == 1 ? "" : "s", POLL_LIST_SEC);
+    } else if (n > 0) {
+        snprintf(note, sizeof note, "All your questions have been answered.");
+    }
+
+    session_view_t sv;
+    session_view(s, &sv);
 
     tpl_var_t vars[] = {
         { "username",      s->user.username },
         { "role",          role_name(s->user.role) },
-        { "expires",       expires },
-        { "remaining",     remaining },
-        { "token_preview", token_preview },
+        { "rows",          sb_cstr(&rows) },
+        { "refresh_note",  note },
+        { "expires",       sv.expires },
+        { "remaining",     sv.remaining },
+        { "token_preview", sv.token_preview },
         { "cookie_name",   SESSION_COOKIE_NAME },
-        { "ttl",           ttl },
+        { "ttl",           sv.ttl },
     };
-    return send_page(c->fd, 200, s, title, tpl, vars, sizeof vars / sizeof vars[0], NULL);
+    int rc = send_page(c->fd, 200, s, "My questions", "student.html",
+                       vars, sizeof vars / sizeof vars[0], open > 0 ? head : NULL);
+    sb_free(&rows);
+    return rc;
 }
 
-static int h_student(const conn_t *c, const http_request_t *req, const session_t *s)
+static int render_ask(int fd, int status, const session_t *s,
+                      const char *error, const char *question)
 {
-    (void)req;
-    return render_dashboard(c, s, "Student dashboard", "student.html");
+    strbuf_t alert;
+    sb_init(&alert);
+    alert_html(&alert, "error", error);
+
+    char rules[96], maxlen[16];
+    snprintf(rules, sizeof rules, "Between %d and %d characters.",
+             MIN_QUESTION_LEN, MAX_QUESTION_LEN);
+    snprintf(maxlen, sizeof maxlen, "%d", MAX_QUESTION_LEN);
+
+    tpl_var_t vars[] = {
+        { "alert",    sb_cstr(&alert) },
+        { "question", question ? question : "" },
+        { "rules",    rules },
+        { "maxlen",   maxlen },
+    };
+    int rc = send_page(fd, status, s, "Ask a question", "ask.html", vars, 4, NULL);
+    sb_free(&alert);
+    return rc;
+}
+
+/* Ask a question. The form is on its own page (not the dashboard) so the
+ * dashboard's auto-refresh cannot wipe out a half-typed question. */
+static int h_ask(const conn_t *c, const http_request_t *req, const session_t *s)
+{
+    if (strcmp(req->method, "GET") == 0)
+        return render_ask(c->fd, 200, s, NULL, NULL);
+
+    /* +2: one byte to detect "too long", one for the NUL. */
+    char buf[MAX_QUESTION_LEN + 2];
+    http_form_get(req->body, "question", buf, sizeof buf);
+
+    char *q = buf;
+    while (isspace((unsigned char)*q))
+        q++;
+    char *end = q + strlen(q);
+    while (end > q && isspace((unsigned char)end[-1]))
+        *--end = '\0';
+
+    size_t len = strlen(q);
+    if (len < MIN_QUESTION_LEN)
+        return render_ask(c->fd, 400, s, "Please write a little more: your question is too short.", q);
+    if (len > MAX_QUESTION_LEN)
+        return render_ask(c->fd, 400, s, "Your question is too long. Please shorten it.", q);
+
+    long long id = db_query_create(s->user.id, q);
+    if (id < 0)
+        return http_send_error(c->fd, 500, NULL, "Could not save your question.");
+
+    log_info("[conn %lu] %s:%u query #%lld created by %s -> %s",
+             c->id, c->ip, c->port, id, s->user.username, qstate_name(Q_PENDING_LLM));
+
+    /* Hand the question to the background LLM workers and answer the
+     * browser immediately; the draft is written while the student waits
+     * on the (auto-refreshing) question page. */
+    llm_enqueue(id);
+
+    /* Post/Redirect/Get: go to the question's own page. */
+    char loc[64];
+    snprintf(loc, sizeof loc, "/query?id=%lld&new=1", id);
+    return http_send_redirect(c->fd, loc, NULL);
+}
+
+/* One question with its progress. Students may only open their own
+ * questions; teachers may open any. */
+static int h_query(const conn_t *c, const http_request_t *req, const session_t *s)
+{
+    char idbuf[24], flag[8];
+    long long id = 0;
+    if (http_form_get(req->query, "id", idbuf, sizeof idbuf)) {
+        char *endp;
+        id = strtoll(idbuf, &endp, 10);
+        if (endp == idbuf || *endp != '\0')
+            id = 0;
+    }
+    if (id <= 0)
+        return http_send_error(c->fd, 400, NULL, "Missing or invalid question number.");
+
+    query_t q;
+    int rc = db_query_get(id, &q);
+    if (rc < 0)
+        return http_send_error(c->fd, 500, NULL, "Could not load the question.");
+    if (rc == 0)
+        return http_send_error(c->fd, 404, NULL, "There is no question with that number.");
+
+    int is_teacher = (s->user.role == ROLE_TEACHER);
+    if (!is_teacher && q.student_id != s->user.id) {
+        log_warn("[conn %lu] %s:%u access denied: %s tried to open query #%lld of %s",
+                 c->id, c->ip, c->port, s->user.username, id, q.student_name);
+        query_free(&q);
+        return http_send_error(c->fd, 403, NULL, "This question belongs to another student.");
+    }
+
+    strbuf_t steps, answer, alert;
+    sb_init(&steps);
+    sb_init(&answer);
+    sb_init(&alert);
+
+    build_stepper(&steps, q.state);
+
+    if (http_form_get(req->query, "new", flag, sizeof flag))
+        alert_html(&alert, "info", "Your question has been sent and saved. "
+                   "You can leave this page; the answer will appear under My questions.");
+
+    if (qstate_has_answer(q.state) && q.final_answer) {
+        sb_puts(&answer, "<section class=\"card answer\"><h2>Answer</h2><div class=\"text\">");
+        sb_append_html(&answer, q.final_answer);
+        sb_puts(&answer, "</div><p class=\"muted\">Checked by teacher ");
+        sb_append_html(&answer, q.teacher_name[0] ? q.teacher_name : "(unknown)");
+        if (q.state == Q_TEACHER_EDITED)
+            sb_puts(&answer, ", who edited the AI draft");
+        sb_puts(&answer, ".</p></section>");
+    } else if (!is_teacher) {
+        sb_printf(&answer, "<section class=\"card pending\"><h2>Answer</h2>"
+                           "<p class=\"muted\">No answer yet. An AI model writes a first draft, "
+                           "then a teacher checks it before it reaches you. This page asks the "
+                           "server for updates every %d seconds.</p></section>", POLL_QUERY_SEC);
+    }
+
+    if (is_teacher) {
+        sb_puts(&answer, "<section class=\"card draft\"><h2>AI draft</h2>");
+        if (q.llm_answer) {
+            sb_puts(&answer, "<div class=\"text\">");
+            sb_append_html(&answer, q.llm_answer);
+            sb_puts(&answer, "</div>");
+        } else {
+            sb_puts(&answer, "<p class=\"muted\">Not generated yet.</p>");
+        }
+        sb_puts(&answer, "</section>");
+    }
+
+    char title[32], created[64], updated[64], head[96];
+    snprintf(title, sizeof title, "Question #%lld", q.id);
+    fmt_time(q.created_at, created, sizeof created);
+    fmt_time(q.updated_at, updated, sizeof updated);
+    snprintf(head, sizeof head, "<meta http-equiv=\"refresh\" content=\"%d\">", POLL_QUERY_SEC);
+
+    strbuf_t badge;
+    sb_init(&badge);
+    state_badge(&badge, q.state, s->user.role);
+
+    tpl_var_t vars[] = {
+        { "title",     title },
+        { "alert",     sb_cstr(&alert) },
+        { "student",   q.student_name },
+        { "created",   created },
+        { "updated",   updated },
+        { "badge",     sb_cstr(&badge) },
+        { "question",  q.question ? q.question : "" },
+        { "steps",     sb_cstr(&steps) },
+        { "answer",    sb_cstr(&answer) },
+        { "back_link", is_teacher ? "/teacher" : "/student" },
+    };
+    rc = send_page(c->fd, 200, s, title, "query.html", vars, sizeof vars / sizeof vars[0],
+                   qstate_has_answer(q.state) ? NULL : head);
+
+    sb_free(&steps);
+    sb_free(&answer);
+    sb_free(&alert);
+    sb_free(&badge);
+    query_free(&q);
+    return rc;
 }
 
 static int h_teacher(const conn_t *c, const http_request_t *req, const session_t *s)
 {
     (void)req;
-    return render_dashboard(c, s, "Teacher dashboard", "teacher.html");
+    session_view_t sv;
+    session_view(s, &sv);
+
+    tpl_var_t vars[] = {
+        { "username",      s->user.username },
+        { "role",          role_name(s->user.role) },
+        { "expires",       sv.expires },
+        { "remaining",     sv.remaining },
+        { "token_preview", sv.token_preview },
+        { "cookie_name",   SESSION_COOKIE_NAME },
+        { "ttl",           sv.ttl },
+    };
+    return send_page(c->fd, 200, s, "Teacher dashboard", "teacher.html",
+                     vars, sizeof vars / sizeof vars[0], NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -502,6 +826,8 @@ static const route_t routes[] = {
     { "/register", h_register, ALLOW_GET | ALLOW_POST, ACCESS_PUBLIC  },
     { "/logout",   h_logout,   ALLOW_POST,             ACCESS_PUBLIC  },
     { "/student",  h_student,  ALLOW_GET,              ACCESS_STUDENT },
+    { "/ask",      h_ask,      ALLOW_GET | ALLOW_POST, ACCESS_STUDENT },
+    { "/query",    h_query,    ALLOW_GET,              ACCESS_USER    },
     { "/teacher",  h_teacher,  ALLOW_GET,              ACCESS_TEACHER },
 };
 
@@ -533,6 +859,9 @@ static int check_access(const conn_t *c, const route_t *r,
                                       auth_clear_cookie_header());
         return http_send_redirect(c->fd, "/login", NULL);
     }
+
+    if (r->access == ACCESS_USER)
+        return -2;          /* any role; the handler checks ownership */
 
     role_t need = (r->access == ACCESS_TEACHER) ? ROLE_TEACHER : ROLE_STUDENT;
     if (s->user.role != need) {

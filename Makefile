@@ -3,13 +3,13 @@
 #   make          build the server
 #   make clean    remove build output
 #
-# Dependencies (Debian/Ubuntu): build-essential libsqlite3-dev
-# Added in later steps:         libcurl4-openssl-dev libcjson-dev
+# Dependencies (Debian/Ubuntu):
+#   sudo apt install build-essential libsqlite3-dev libcurl4-openssl-dev libcjson-dev
 
 CC       ?= gcc
 CFLAGS   ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -g
 CPPFLAGS += -Iinclude -D_POSIX_C_SOURCE=200809L
-LDLIBS   += -lsqlite3
+LDLIBS   += -lsqlite3 -lcurl -lcjson
 
 SERVER   := sqms_server
 SRC      := $(wildcard src/*.c)

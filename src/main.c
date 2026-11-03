@@ -10,6 +10,7 @@
 #include "auth.h"
 #include "config.h"
 #include "db.h"
+#include "llm.h"
 #include "log.h"
 #include "server.h"
 
@@ -165,8 +166,13 @@ int main(int argc, char **argv)
     } else if (install_signal_handlers() < 0) {
         perror("sigaction");
         rc = EXIT_FAILURE;
+    } else if (llm_init() < 0) {
+        /* Before server_run: libcurl's global init must happen while
+         * this is still the only thread. */
+        rc = EXIT_FAILURE;
     } else {
         rc = server_run(port) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+        llm_shutdown();         /* stop workers before closing the DB */
     }
 
     db_close();

@@ -200,6 +200,69 @@ form.inline { display: inline; margin: 0; }
   .alert.error { background: #3a1d1b; }
 }
 
+/* Page header with an action on the right */
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.page-head .lead { margin-bottom: 16px; }
+.page-head .button { margin-top: 4px; }
+.crumbs { margin: 0 0 12px; }
+.crumbs a { text-decoration: none; }
+
+/* Question list */
+table.list { width: 100%; border-collapse: collapse; }
+table.list th { text-align: left; font-size: .85rem; color: var(--muted); font-weight: 600; padding: 0 10px 8px; }
+table.list td { padding: 10px; border-top: 1px solid var(--border); vertical-align: top; }
+table.list td.num { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.list td.empty { text-align: center; color: var(--muted); padding: 24px 10px; }
+table.list a { text-decoration: none; }
+table.list a:hover { text-decoration: underline; }
+.refresh-note { margin: 12px 0 0; }
+.refresh-note:empty { display: none; }
+
+/* State badges, one colour per state */
+.state {
+  display: inline-block;
+  font-size: .8rem;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.state-0 { background: var(--warn-soft); color: var(--warn); }      /* PENDING_LLM */
+.state-1 { background: var(--accent-soft); color: var(--accent); }  /* LLM_ANSWERED */
+.state-2, .state-3 { background: var(--ok-soft); color: var(--ok); } /* TEACHER_* */
+.state-4 { background: var(--ok); color: var(--surface); }          /* DELIVERED */
+
+/* Progress stepper */
+.stepper { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.stepper li { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px; border-radius: 8px; background: var(--bg); color: var(--muted); }
+.stepper .dot {
+  width: 26px; height: 26px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: .85rem;
+  background: var(--border); color: var(--muted);
+}
+.stepper .label { font-weight: 600; font-size: .92rem; }
+.stepper code { font-size: .72rem; background: none; padding: 0; }
+.stepper li.done { color: var(--text); }
+.stepper li.done .dot { background: var(--ok); color: var(--surface); }
+.stepper li.current { background: var(--ok-soft); }
+@media (max-width: 640px) { .stepper { grid-template-columns: 1fr 1fr; } }
+
+/* Question and answer text: keep the student's line breaks */
+.text { white-space: pre-wrap; word-break: break-word; }
+.card.answer { border-color: var(--ok); }
+.card.draft { border-style: dashed; }
+
+/* Ask form */
+.ask-card { max-width: 720px; }
+.ask-card.explain ol { padding-left: 20px; margin: 0; color: var(--muted); font-size: .93rem; }
+.ask-card.explain li { margin-bottom: 6px; }
+textarea { resize: vertical; min-height: 140px; }
+
+/* Collapsible session panel */
+.session-details summary { cursor: pointer; font-weight: 600; }
+.session-details[open] summary { margin-bottom: 12px; }
+
 .footer { color: var(--muted); font-size: .85rem; padding-bottom: 32px; }
 
 @media (max-width: 560px) {

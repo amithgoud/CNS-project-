@@ -41,7 +41,7 @@
  * client can make us allocate.
  */
 #define MAX_HEADER_SIZE       8192
-#define MAX_BODY_SIZE         16384
+#define MAX_BODY_SIZE         32768
 
 /* Largest file served from STATIC_DIR. */
 #define MAX_STATIC_FILE       (1024 * 1024)
@@ -84,5 +84,31 @@
 #define USERNAME_MAX          32
 #define PASSWORD_MIN          6
 #define PASSWORD_MAX          128
+
+/* Questions. MAX_QUESTION_LEN is in bytes; URL-encoding can triple the
+ * size on the wire, which still fits in MAX_BODY_SIZE. */
+#define MIN_QUESTION_LEN      5
+#define MAX_QUESTION_LEN      2000
+#define STUDENT_LIST_LIMIT    50        /* questions shown on the dashboard */
+
+/* Meta-refresh intervals (seconds) for pages that poll for changes. */
+#define POLL_LIST_SEC         10
+#define POLL_QUERY_SEC        5
+
+/*
+ * LLM drafting. Which LLM to use is chosen at run time with environment
+ * variables (see llm.h); these are the fixed limits.
+ *
+ * LLM_WORKERS background threads take question ids from an in-memory job
+ * queue (producer/consumer), so a slow LLM never blocks a web request.
+ */
+#define LLM_WORKERS             2
+#define LLM_QUEUE_CAP           1024
+#define LLM_CONNECT_TIMEOUT_SEC 10
+#define LLM_TIMEOUT_SEC         120       /* local models can be slow */
+#define LLM_MAX_ATTEMPTS        3         /* retries with backoff */
+#define LLM_MAX_RESPONSE        (1024 * 1024)
+#define LLM_MAX_ANSWER          8000      /* bytes kept from the reply */
+#define LLM_MOCK_DELAY_MS       3000      /* fake "thinking" time in MOCK mode */
 
 #endif /* CONFIG_H */
