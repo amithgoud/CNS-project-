@@ -1,0 +1,49 @@
+<section class="hero">
+  <h1>Student Query Management System</h1>
+  <p class="lead">Students ask questions, an LLM drafts an answer, a teacher approves or edits it,
+  and the final answer goes back to the student, all through a web server written from scratch in C.</p>
+</section>
+
+<section class="grid">
+  <div class="card">
+    <h2>Student</h2>
+    <p>Log in, submit questions, and follow each one until the final answer arrives.</p>
+    <p class="card-actions"><a class="button small" href="/register">Register</a> <a href="/login">Log in</a></p>
+  </div>
+  <div class="card">
+    <h2>Teacher</h2>
+    <p>Review the queue of questions with their LLM drafts, then approve or edit the answer.</p>
+    <p class="card-actions"><a href="/login">Teacher log in</a></p>
+  </div>
+  <div class="card">
+    <h2>Server</h2>
+    <p>Accepts TCP connections, speaks HTTP/1.1, stores data and calls the LLM.</p>
+    <span class="badge live">Running</span>
+  </div>
+</section>
+
+<h2 class="section-title">See the networking live</h2>
+<section class="grid">
+  <a class="card link-card" href="/echo">
+    <h3>Echo &rarr;</h3>
+    <p>Send a message with GET and with POST and see how each one travels over HTTP.</p>
+  </a>
+  <a class="card link-card" href="/inspect">
+    <h3>Inspect request &rarr;</h3>
+    <p>The exact request line and headers your browser just sent, plus your IP and port.</p>
+  </a>
+  <a class="card link-card" href="/status">
+    <h3>Server status &rarr;</h3>
+    <p>Live connection counters. Refreshes every 5 seconds, each time over a new TCP connection.</p>
+  </a>
+</section>
+
+<section class="card flow">
+  <h2>Where a question goes</h2>
+  <ol class="states">
+    <li><span>PENDING_LLM</span>Question received</li>
+    <li><span>LLM_ANSWERED</span>Draft from the LLM</li>
+    <li><span>TEACHER_APPROVED / EDITED</span>Teacher reviewed</li>
+    <li><span>DELIVERED</span>Answer sent to the student</li>
+  </ol>
+</section>

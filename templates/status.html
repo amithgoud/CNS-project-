@@ -1,0 +1,21 @@
+<h1>Server status</h1>
+<p class="lead">Updated at {{now}}. This page reloads itself every 5 seconds using
+<code>&lt;meta http-equiv="refresh"&gt;</code>: polling with no JavaScript.</p>
+
+<section class="stats">
+  <div class="stat"><span class="num">{{active}}<small> / {{max}}</small></span><span class="label">Active connections</span></div>
+  <div class="stat"><span class="num">{{accepted}}</span><span class="label">Connections accepted</span></div>
+  <div class="stat"><span class="num">{{rejected}}</span><span class="label">Rejected (server full)</span></div>
+  <div class="stat"><span class="num">{{uptime}}</span><span class="label">Uptime</span></div>
+</section>
+
+<section class="card">
+  <h2>This refresh</h2>
+  <table class="kv">
+    <tr><th>Connection number</th><td>#{{conn_id}}</td></tr>
+    <tr><th>Your address</th><td><code>{{client_ip}}:{{client_port}}</code></td></tr>
+  </table>
+  <p class="muted">Watch the connection number and port change on every refresh: each reload is a
+  new TCP three-way handshake, a new worker thread, one request, one response, and a close.
+  "Active connections" includes the one serving this page.</p>
+</section>

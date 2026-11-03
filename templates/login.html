@@ -1,0 +1,23 @@
+<section class="card auth-card">
+  <h1>Log in</h1>
+  <p class="muted">Students and teachers use the same form. The server sends you to the right dashboard for your role.</p>
+  {{{alert}}}
+  <form method="post" action="/login">
+    <label for="username">Username</label>
+    <input id="username" name="username" value="{{username}}" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Log in</button>
+  </form>
+  <p class="muted">New student? <a href="/register">Create an account</a>.</p>
+</section>
+
+<section class="card auth-card explain">
+  <h2>What happens when you log in</h2>
+  <ol>
+    <li>Your browser sends <code>POST /login</code> with the form in the request body.</li>
+    <li>The server checks your password against a salted PBKDF2-SHA256 hash.</li>
+    <li>It answers <code>302 Found</code> with <code>Set-Cookie: sqms_session=&lt;random token&gt;</code>.</li>
+    <li>From then on, every request carries <code>Cookie: sqms_session=...</code>, which is how a stateless protocol remembers you.</li>
+  </ol>
+</section>

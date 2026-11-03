@@ -1,0 +1,9 @@
+build/
+sqms_server
+sqms_client
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+server.log
+*.pcap

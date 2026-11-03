@@ -1,0 +1,17 @@
+{
+  "name": "SQMS (C on Linux)",
+  "image": "mcr.microsoft.com/devcontainers/cpp:1-ubuntu-22.04",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y libsqlite3-dev sqlite3 libcurl4-openssl-dev libcjson-dev libssl-dev tcpdump netcat-openbsd",
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": {
+      "label": "SQMS web server",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-vscode.cpptools"]
+    }
+  }
+}

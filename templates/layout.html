@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}} · Student Query Management System</title>
+<link rel="stylesheet" href="/static/style.css">
+{{{head_extra}}}
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="/">SQMS</a>
+    <nav>
+      <a href="/">Home</a>
+      <a href="/echo">Echo</a>
+      <a href="/inspect">Inspect request</a>
+      <a href="/status">Server status</a>
+    </nav>
+    <div class="account">{{{account_nav}}}</div>
+  </div>
+</header>
+<main class="wrap">
+{{{content}}}
+</main>
+<footer class="wrap footer">
+  Served by a hand-written HTTP/1.1 server in C &middot; raw POSIX TCP sockets &middot; one thread per connection
+</footer>
+</body>
+</html>

@@ -1,0 +1,19 @@
+<h1>Welcome, {{username}}</h1>
+<p class="lead">This is the teacher dashboard. Here you will review LLM draft answers, approve or edit them, and send them to students.</p>
+
+<section class="card">
+  <h2>Review queue</h2>
+  <p class="muted">The queue arrives in a later build step. It will list questions in state LLM_ANSWERED,
+  each with the LLM's draft for you to approve or edit.</p>
+</section>
+
+<section class="card">
+  <h2>Your session</h2>
+  <table class="kv">
+    <tr><th>Logged in as</th><td>{{username}} <span class="role-tag">{{role}}</span></td></tr>
+    <tr><th>Cookie</th><td><code>{{cookie_name}}={{token_preview}}</code></td></tr>
+    <tr><th>Expires at</th><td>{{expires}} (in {{remaining}})</td></tr>
+  </table>
+  <p class="muted">The server checks your role on every request, not just at login. A student who types
+  <code>/teacher</code> into the address bar gets <code>403 Forbidden</code>.</p>
+</section>

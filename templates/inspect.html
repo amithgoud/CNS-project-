@@ -1,0 +1,32 @@
+<h1>Inspect request</h1>
+<p class="lead">This is the HTTP request your browser just sent, exactly as the server parsed it from the TCP byte stream.</p>
+
+<section class="card">
+  <h2>Request line</h2>
+  <pre class="wire">{{method}} {{path}} {{version}}</pre>
+  <table class="kv">
+    <tr><th>Method</th><td><code>{{method}}</code></td></tr>
+    <tr><th>Path</th><td><code>{{path}}</code></td></tr>
+    <tr><th>Query string</th><td><code>{{query}}</code></td></tr>
+    <tr><th>Protocol version</th><td><code>{{version}}</code></td></tr>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Headers ({{header_count}})</h2>
+  <table class="kv">
+{{{header_rows}}}
+  </table>
+</section>
+
+<section class="card">
+  <h2>TCP connection</h2>
+  <table class="kv">
+    <tr><th>Your IP address</th><td><code>{{client_ip}}</code></td></tr>
+    <tr><th>Your port</th><td><code>{{client_port}}</code> (an ephemeral port chosen by your operating system)</td></tr>
+    <tr><th>Connection number</th><td>#{{conn_id}} since the server started</td></tr>
+  </table>
+  <p class="muted">Reload this page: the port changes each time, because the server answers with
+  <code>Connection: close</code> and your browser opens a new TCP connection for every request.
+  Add <a href="/inspect?name=demo&amp;course=networks">a query string</a> to see it parsed.</p>
+</section>

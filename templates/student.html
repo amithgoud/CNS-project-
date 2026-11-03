@@ -1,0 +1,22 @@
+<h1>Welcome, {{username}}</h1>
+<p class="lead">This is your student dashboard. Here you will submit questions and follow their answers.</p>
+
+<section class="card">
+  <h2>My questions</h2>
+  <p class="muted">Asking questions arrives in the next build step. Each question will move through
+  PENDING_LLM &rarr; LLM_ANSWERED &rarr; TEACHER_APPROVED / EDITED &rarr; DELIVERED.</p>
+</section>
+
+<section class="card">
+  <h2>Your session</h2>
+  <table class="kv">
+    <tr><th>Logged in as</th><td>{{username}} <span class="role-tag">{{role}}</span></td></tr>
+    <tr><th>Cookie</th><td><code>{{cookie_name}}={{token_preview}}</code></td></tr>
+    <tr><th>Expires at</th><td>{{expires}} (in {{remaining}})</td></tr>
+  </table>
+  <p class="muted">HTTP itself has no memory between requests. The server knows it is you because your
+  browser sends this cookie with every request. The token is 256 random bits, stored in the server's
+  <code>sessions</code> table, and expires after {{ttl}} seconds. Try opening
+  <a href="/teacher">/teacher</a>: you will get <code>403 Forbidden</code>, because you are not a teacher.
+  On <a href="/inspect">Inspect request</a> you can see the <code>Cookie</code> header your browser sends.</p>
+</section>

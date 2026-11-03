@@ -1,0 +1,28 @@
+<h1>Echo</h1>
+<p class="lead">The web version of a TCP echo server: whatever you send, the server sends back.
+Try both forms and compare how the message reaches the server.</p>
+
+{{{result}}}
+
+<section class="grid two">
+  <form class="card" method="get" action="/echo">
+    <h2>Send with GET</h2>
+    <p class="muted">The message is added to the URL as <code>/echo?message=...</code>.
+    Look at your address bar after sending.</p>
+    <label for="m1">Message</label>
+    <input id="m1" name="message" maxlength="500" placeholder="Hello server" required>
+    <button type="submit">Send GET</button>
+  </form>
+
+  <form class="card" method="post" action="/echo">
+    <h2>Send with POST</h2>
+    <p class="muted">The message travels in the request body. The URL stays clean,
+    and the server reads exactly <code>Content-Length</code> bytes after the headers.</p>
+    <label for="m2">Message</label>
+    <input id="m2" name="message" maxlength="500" placeholder="Hello server" required>
+    <button type="submit">Send POST</button>
+  </form>
+</section>
+
+<p class="muted">Try typing <code>&lt;b&gt;bold&lt;/b&gt;</code>: it comes back as plain text, because the server
+HTML-escapes everything a user sends before putting it in a page.</p>
