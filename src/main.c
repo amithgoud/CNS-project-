@@ -2,17 +2,23 @@
  * main.c - Entry point for the Student Query Management System server.
  *
  * Usage:
- *   ./sqms_server [port]                          run the server
+ *   ./sqms_server [port]                          run the server (HTTP)
+ *   ./sqms_server --https [port]                  run over HTTPS (needs
+ *                                                 "make HTTPS=1" and "make cert")
  *   ./sqms_server --add-user <student|teacher> <username>
  *                                                 create an account (the
  *                                                 password is read from stdin)
+ *
+ * Environment: LLM_* (see llm.h), RATE_LIMIT=<requests per second per IP>.
  */
 #include "auth.h"
 #include "config.h"
 #include "db.h"
 #include "llm.h"
 #include "log.h"
+#include "ratelimit.h"
 #include "server.h"
+#include "tls.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -123,32 +129,84 @@ static int add_user(const char *role_str, const char *username)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-            "usage: %s [port]\n"
+            "usage: %s [--https] [port]\n"
             "       %s --add-user <student|teacher> <username>\n",
             prog, prog);
 }
 
+/* RATE_LIMIT=<requests per second per IP>; unset or 0 = off. */
+static void setup_rate_limit(void)
+{
+    const char *v = getenv("RATE_LIMIT");
+    double rate = v ? strtod(v, NULL) : 0.0;
+    if (rate > 0) {
+        ratelimit_init(rate, 2 * rate);
+        log_info("rate limit: %.1f requests/s per IP, burst %.0f", rate, 2 * rate);
+    } else {
+        ratelimit_init(0, 0);
+    }
+}
+
+static int run_server(unsigned short port, int https)
+{
+    int rc = EXIT_FAILURE;
+
+    if (install_signal_handlers() < 0) {
+        perror("sigaction");
+        return EXIT_FAILURE;
+    }
+    if (https && tls_init(TLS_CERT_FILE, TLS_KEY_FILE) < 0)
+        return EXIT_FAILURE;
+    setup_rate_limit();
+
+    /* Before server_run: libcurl's global init must happen while this is
+     * still the only thread. */
+    if (llm_init() == 0) {
+        rc = server_run(port) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+        llm_shutdown();         /* stop workers before closing the DB */
+    }
+    tls_cleanup();
+    return rc;
+}
+
 int main(int argc, char **argv)
 {
-    unsigned short port = DEFAULT_PORT;
-    int adding_user = (argc > 1 && strcmp(argv[1], "--add-user") == 0);
+    int https = 0;
+    int argi = 1;
 
-    if (adding_user) {
+    if (argc > 1 && strcmp(argv[1], "--add-user") == 0) {
         if (argc != 4) {
             usage(argv[0]);
             return EXIT_FAILURE;
         }
-    } else if (argc > 2) {
-        usage(argv[0]);
-        return EXIT_FAILURE;
-    } else if (argc == 2) {
+        if (log_init(LOG_FILE_PATH) < 0 || db_open(DB_PATH) < 0) {
+            perror("startup");
+            return EXIT_FAILURE;
+        }
+        int rc = add_user(argv[2], argv[3]);
+        db_close();
+        log_close();
+        return rc;
+    }
+
+    if (argi < argc && strcmp(argv[argi], "--https") == 0) {
+        https = 1;
+        argi++;
+    }
+    unsigned short port = https ? DEFAULT_HTTPS_PORT : DEFAULT_PORT;
+    if (argi < argc) {
         char *end;
-        long p = strtol(argv[1], &end, 10);
-        if (*argv[1] == '\0' || *end != '\0' || p < 1 || p > 65535) {
+        long p = strtol(argv[argi], &end, 10);
+        if (*argv[argi] == '\0' || *end != '\0' || p < 1 || p > 65535) {
             usage(argv[0]);
             return EXIT_FAILURE;
         }
         port = (unsigned short)p;
+        argi++;
+    }
+    if (argi != argc) {
+        usage(argv[0]);
+        return EXIT_FAILURE;
     }
 
     if (log_init(LOG_FILE_PATH) < 0) {
@@ -160,20 +218,7 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    int rc;
-    if (adding_user) {
-        rc = add_user(argv[2], argv[3]);
-    } else if (install_signal_handlers() < 0) {
-        perror("sigaction");
-        rc = EXIT_FAILURE;
-    } else if (llm_init() < 0) {
-        /* Before server_run: libcurl's global init must happen while
-         * this is still the only thread. */
-        rc = EXIT_FAILURE;
-    } else {
-        rc = server_run(port) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
-        llm_shutdown();         /* stop workers before closing the DB */
-    }
+    int rc = run_server(port, https);
 
     db_close();
     log_close();

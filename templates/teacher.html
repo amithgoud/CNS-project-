@@ -1,14 +1,38 @@
-<h1>Welcome, {{username}}</h1>
-<p class="lead">This is the teacher dashboard. Here you will review LLM draft answers, approve or edit them, and send them to students.</p>
+<h1>Review queue</h1>
+<p class="lead">Hi {{username}}. Questions with an AI draft wait here, oldest first. Check each draft, fix it if needed, and send it to the student.</p>
 
-<section class="card">
-  <h2>Review queue</h2>
-  <p class="muted">The queue arrives in a later build step. It will list questions in state LLM_ANSWERED,
-  each with the LLM's draft for you to approve or edit.</p>
+{{{alert}}}
+
+<section class="stats">
+  <div class="stat"><span class="num">{{c_pending}}</span><span class="label">Waiting for AI draft</span></div>
+  <div class="stat"><span class="num">{{c_review}}</span><span class="label">Need your review</span></div>
+  <div class="stat"><span class="num">{{c_waiting}}</span><span class="label">Sent, not yet read</span></div>
+  <div class="stat"><span class="num">{{c_delivered}}</span><span class="label">Delivered</span></div>
 </section>
 
 <section class="card">
-  <h2>Your session</h2>
+  <h2>Needs review</h2>
+  <table class="list">
+    <thead><tr><th>#</th><th>Student</th><th>Question</th><th>Asked</th><th></th></tr></thead>
+    <tbody>
+{{{queue_rows}}}
+    </tbody>
+  </table>
+  <p class="muted refresh-note">This page asks the server for new questions every {{poll}} seconds.</p>
+</section>
+
+<section class="card">
+  <h2>Recently reviewed</h2>
+  <table class="list">
+    <thead><tr><th>#</th><th>Student</th><th>Question</th><th>Status</th><th>Teacher</th><th>Updated</th></tr></thead>
+    <tbody>
+{{{done_rows}}}
+    </tbody>
+  </table>
+</section>
+
+<details class="card session-details">
+  <summary>Your session</summary>
   <table class="kv">
     <tr><th>Logged in as</th><td>{{username}} <span class="role-tag">{{role}}</span></td></tr>
     <tr><th>Cookie</th><td><code>{{cookie_name}}={{token_preview}}</code></td></tr>
@@ -16,4 +40,4 @@
   </table>
   <p class="muted">The server checks your role on every request, not just at login. A student who types
   <code>/teacher</code> into the address bar gets <code>403 Forbidden</code>.</p>
-</section>
+</details>

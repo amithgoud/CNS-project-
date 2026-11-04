@@ -107,4 +107,20 @@ int db_query_ids_by_state(qstate_t state, long long *ids, int max);
  * Returns 1 if updated, 0 if the question was not PENDING_LLM, -1 error. */
 int db_query_set_llm_answer(long long id, const char *answer);
 
+/* Teacher's review queue (LLM_ANSWERED, oldest first) and recently
+ * reviewed questions (newest first). Same contract as the student list. */
+int db_query_list_review_queue(int max, query_t **out);
+int db_query_list_reviewed(int max, query_t **out);
+
+/* Teacher review: store the final answer and move LLM_ANSWERED ->
+ * TEACHER_EDITED (edited != 0) or TEACHER_APPROVED. Returns 1 if updated,
+ * 0 if it was no longer LLM_ANSWERED (e.g. another teacher was first),
+ * -1 on error. */
+int db_query_review(long long id, long long teacher_id, const char *final_answer,
+                    int edited);
+
+/* TEACHER_APPROVED/EDITED -> DELIVERED, once the answer has been sent to
+ * the student. 1 if updated, 0 if not in those states, -1 on error. */
+int db_query_mark_delivered(long long id);
+
 #endif /* DB_H */

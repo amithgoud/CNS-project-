@@ -10,6 +10,15 @@
 </section>
 
 <section class="card">
+  <h2>Server</h2>
+  <table class="kv">
+    <tr><th>Transport</th><td>{{transport}}</td></tr>
+    <tr><th>Per-IP rate limit</th><td>{{rate_limit}}</td></tr>
+    <tr><th>Rejected by rate limit</th><td>{{rate_limited}}</td></tr>
+  </table>
+</section>
+
+<section class="card">
   <h2>Questions by state</h2>
   <table class="kv">
     <tr><th><code>PENDING_LLM</code></th><td>{{q_pending}}</td></tr>

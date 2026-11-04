@@ -259,6 +259,16 @@ table.list a:hover { text-decoration: underline; }
 .ask-card.explain li { margin-bottom: 6px; }
 textarea { resize: vertical; min-height: 140px; }
 
+/* Teacher review */
+.review-card textarea { min-height: 260px; }
+.form-actions { display: flex; align-items: center; gap: 18px; }
+.form-actions a { margin-top: 14px; }
+table.list td .button.small { white-space: nowrap; }
+@media (max-width: 640px) {
+  table.list { font-size: .9rem; }
+  table.list th, table.list td { padding-left: 6px; padding-right: 6px; }
+}
+
 /* Collapsible session panel */
 .session-details summary { cursor: pointer; font-weight: 600; }
 .session-details[open] summary { margin-bottom: 12px; }

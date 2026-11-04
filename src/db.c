@@ -398,22 +398,32 @@ out:
     return rc;
 }
 
-int db_query_list_by_student(long long student_id, int max, query_t **out)
+/*
+ * Run QUERY_COLUMNS + where_sql and collect up to max rows. where_sql
+ * must end in "LIMIT ?". If has_arg, it also contains one other "?"
+ * before the LIMIT, bound to arg.
+ */
+static int list_queries(const char *where_sql, int has_arg, long long arg,
+                        int max, query_t **out)
 {
     sqlite3_stmt *st = NULL;
     int n = -1;
+    char sql[1024];
 
     *out = NULL;
     query_t *list = calloc((size_t)max, sizeof *list);
     if (!list)
         return -1;
+    snprintf(sql, sizeof sql, "%s%s", QUERY_COLUMNS, where_sql);
 
     pthread_mutex_lock(&db_lock);
-    if (prepare(QUERY_COLUMNS "WHERE q.student_id = ? ORDER BY q.id DESC LIMIT ?", &st) < 0)
+    if (prepare(sql, &st) < 0)
         goto out;
 
-    sqlite3_bind_int64(st, 1, student_id);
-    sqlite3_bind_int(st, 2, max);
+    int idx = 1;
+    if (has_arg)
+        sqlite3_bind_int64(st, idx++, arg);
+    sqlite3_bind_int(st, idx, max);
 
     n = 0;
     int s = SQLITE_DONE;
@@ -433,6 +443,80 @@ out:
     else
         *out = list;
     return n;
+}
+
+int db_query_list_by_student(long long student_id, int max, query_t **out)
+{
+    return list_queries("WHERE q.student_id = ? ORDER BY q.id DESC LIMIT ?",
+                        1, student_id, max, out);
+}
+
+int db_query_list_review_queue(int max, query_t **out)
+{
+    /* Oldest first: first come, first served. */
+    return list_queries("WHERE q.state = 'LLM_ANSWERED' ORDER BY q.id ASC LIMIT ?",
+                        0, 0, max, out);
+}
+
+int db_query_list_reviewed(int max, query_t **out)
+{
+    return list_queries("WHERE q.state IN ('TEACHER_APPROVED', 'TEACHER_EDITED', 'DELIVERED') "
+                        "ORDER BY q.updated_at DESC, q.id DESC LIMIT ?",
+                        0, 0, max, out);
+}
+
+int db_query_review(long long id, long long teacher_id, const char *final_answer,
+                    int edited)
+{
+    sqlite3_stmt *st = NULL;
+    int rc = -1;
+
+    pthread_mutex_lock(&db_lock);
+    /* "AND state = 'LLM_ANSWERED'" makes the check and the update one
+     * atomic step: if two teachers submit at once, only the first UPDATE
+     * matches the row; the second changes 0 rows and is told so. */
+    if (prepare("UPDATE queries SET final_answer = ?, teacher_id = ?, state = ?, "
+                "updated_at = ? WHERE id = ? AND state = 'LLM_ANSWERED'", &st) < 0)
+        goto out;
+
+    sqlite3_bind_text(st, 1, final_answer, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, teacher_id);
+    sqlite3_bind_text(st, 3, qstate_name(edited ? Q_TEACHER_EDITED : Q_TEACHER_APPROVED),
+                      -1, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)time(NULL));
+    sqlite3_bind_int64(st, 5, id);
+
+    if (sqlite3_step(st) == SQLITE_DONE)
+        rc = sqlite3_changes(db) > 0 ? 1 : 0;
+    else
+        log_error("db: review query: %s", sqlite3_errmsg(db));
+out:
+    sqlite3_finalize(st);
+    pthread_mutex_unlock(&db_lock);
+    return rc;
+}
+
+int db_query_mark_delivered(long long id)
+{
+    sqlite3_stmt *st = NULL;
+    int rc = -1;
+
+    pthread_mutex_lock(&db_lock);
+    if (prepare("UPDATE queries SET state = 'DELIVERED', updated_at = ? "
+                "WHERE id = ? AND state IN ('TEACHER_APPROVED', 'TEACHER_EDITED')", &st) < 0)
+        goto out;
+
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)time(NULL));
+    sqlite3_bind_int64(st, 2, id);
+
+    if (sqlite3_step(st) == SQLITE_DONE)
+        rc = sqlite3_changes(db) > 0 ? 1 : 0;
+    else
+        log_error("db: mark delivered: %s", sqlite3_errmsg(db));
+out:
+    sqlite3_finalize(st);
+    pthread_mutex_unlock(&db_lock);
+    return rc;
 }
 
 int db_query_count_by_state(long long counts[Q_STATE_COUNT])

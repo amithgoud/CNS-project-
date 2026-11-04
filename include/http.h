@@ -25,6 +25,7 @@
 #define HTTP_H
 
 #include "config.h"
+#include "server.h"
 
 #include <stddef.h>
 
@@ -60,7 +61,7 @@ typedef struct {
  *   -1  the client closed or went silent before sending anything; there
  *       is no one to reply to
  */
-int http_read_request(int fd, http_request_t *req);
+int http_read_request(const conn_t *c, http_request_t *req);
 
 /* Case-insensitive header lookup (header names are case-insensitive
  * per RFC 9110). Returns NULL if absent. */
@@ -89,15 +90,15 @@ const char *http_status_text(int status);
  * (each line ending in \r\n, may be NULL), blank line, body.
  * Returns status on success, -1 if sending failed.
  */
-int http_send_response(int fd, int status, const char *content_type,
+int http_send_response(const conn_t *c, int status, const char *content_type,
                        const char *extra_headers,
                        const void *body, size_t body_len);
 
 /* 302 Found with a Location header (the browser then GETs that URL). */
-int http_send_redirect(int fd, const char *location, const char *extra_headers);
+int http_send_redirect(const conn_t *c, const char *location, const char *extra_headers);
 
 /* Small HTML error page. message may be NULL for a default text. */
-int http_send_error(int fd, int status, const char *extra_headers,
+int http_send_error(const conn_t *c, int status, const char *extra_headers,
                     const char *message);
 
 #endif /* HTTP_H */

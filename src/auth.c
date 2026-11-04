@@ -4,6 +4,7 @@
 #include "auth.h"
 #include "config.h"
 #include "crypto.h"
+#include "tls.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -133,12 +134,12 @@ void auth_cookie_header(const session_t *s, char *out, size_t outsz)
      * SameSite=Lax: the browser does not send it on cross-site POSTs,
      *   which blocks cross-site request forgery on our forms.
      * Max-Age: the browser forgets it when the server-side session expires.
-     * (Secure is added in the HTTPS bonus step; over plain HTTP it would
-     *  stop the cookie from being sent at all.) */
+     * Secure (HTTPS only): the browser never sends it over plain HTTP,
+     *   where anyone sniffing the network could read and reuse it. */
     snprintf(out, outsz,
              "Set-Cookie: " SESSION_COOKIE_NAME "=%s; Path=/; Max-Age=%d; "
-             "HttpOnly; SameSite=Lax\r\n",
-             s->token, SESSION_TTL_SEC);
+             "HttpOnly; SameSite=Lax%s\r\n",
+             s->token, SESSION_TTL_SEC, tls_enabled() ? "; Secure" : "");
 }
 
 const char *auth_clear_cookie_header(void)

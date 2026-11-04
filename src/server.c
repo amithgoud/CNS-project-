@@ -4,11 +4,10 @@
  * Socket lifecycle on the server side:
  *
  *   socket() -> setsockopt(SO_REUSEADDR) -> bind() -> listen()
- *        -> loop { accept() -> spawn worker thread }
+ *        -> loop { accept() -> rate limit -> slot limit -> spawn worker }
  *
- *   worker:  setsockopt(SO_RCVTIMEO/SO_SNDTIMEO)
- *        -> recv() HTTP request -> route -> send() HTTP response
- *        -> shutdown(SHUT_WR) -> close()
+ *   worker:  [TLS handshake] -> recv() HTTP request -> route
+ *        -> send() HTTP response -> shutdown(SHUT_WR) -> close()
  *
  * ---------------------------------------------------------------------
  * Why thread-per-connection?
@@ -20,8 +19,9 @@
  *     server, which makes the HTTP logic easy to follow and explain. An
  *     event loop (select/poll/epoll) would force every handler to be
  *     written as a state machine.
- *  2. A slow client (or a slow LLM call, which can take seconds) blocks
- *     only its own thread; all other students keep being served.
+ *  2. A slow client (or a slow TLS handshake) blocks only its own thread;
+ *     all other students keep being served. Slow LLM calls are moved off
+ *     the request threads entirely (see llm.c).
  *  3. Our load is small (a classroom: tens of clients), so the cost of one
  *     thread per connection (~8 MB virtual stack, a few KB actually used)
  *     is irrelevant.
@@ -36,7 +36,9 @@
 #include "config.h"
 #include "http.h"
 #include "log.h"
+#include "ratelimit.h"
 #include "router.h"
+#include "tls.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -60,6 +62,7 @@ static pthread_cond_t  conn_cv   = PTHREAD_COND_INITIALIZER;
 static int             active_conns = 0;
 static unsigned long   total_accepted = 0;
 static unsigned long   total_rejected = 0;
+static unsigned long   total_rate_limited = 0;
 static time_t          start_time;
 
 /* Set from the signal handler; sig_atomic_t makes that write safe. */
@@ -73,12 +76,15 @@ void server_request_stop(void)
 void server_get_stats(server_stats_t *out)
 {
     pthread_mutex_lock(&conn_lock);
-    out->active   = active_conns;
-    out->max      = MAX_CONNECTIONS;
-    out->accepted = total_accepted;
-    out->rejected = total_rejected;
-    out->started  = start_time;
+    out->active       = active_conns;
+    out->max          = MAX_CONNECTIONS;
+    out->accepted     = total_accepted;
+    out->rejected     = total_rejected;
+    out->rate_limited = total_rate_limited;
+    out->started      = start_time;
     pthread_mutex_unlock(&conn_lock);
+    out->https      = tls_enabled();
+    out->rate_limit = ratelimit_rate();
 }
 
 /* Reserve a connection slot. Returns 1 on success, 0 if the server is full. */
@@ -105,7 +111,18 @@ static void release_slot(void)
     pthread_mutex_unlock(&conn_lock);
 }
 
-ssize_t send_all(int fd, const void *buf, size_t len)
+/* ------------------------------------------------------------------ */
+/* Connection I/O (plain TCP or TLS)                                  */
+/* ------------------------------------------------------------------ */
+
+ssize_t conn_recv(const conn_t *c, void *buf, size_t len)
+{
+    if (c->tls)
+        return tls_recv(c, buf, len);
+    return recv(c->fd, buf, len, 0);
+}
+
+ssize_t conn_send_all(const conn_t *c, const void *buf, size_t len)
 {
     const char *p = buf;
     size_t left = len;
@@ -114,7 +131,8 @@ ssize_t send_all(int fd, const void *buf, size_t len)
         /* MSG_NOSIGNAL: if the peer has gone away, return EPIPE instead of
          * raising SIGPIPE (which would kill the whole process). SIGPIPE is
          * also ignored in main(), so this is belt and braces. */
-        ssize_t n = send(fd, p, left, MSG_NOSIGNAL);
+        ssize_t n = c->tls ? tls_send(c, p, left)
+                           : send(c->fd, p, left, MSG_NOSIGNAL);
         if (n < 0) {
             if (errno == EINTR)
                 continue;
@@ -148,21 +166,22 @@ static void set_socket_timeouts(int fd)
  * shutdown(SHUT_WR), then briefly read and discard whatever the client
  * still sends until it closes its side, and only then close().
  */
-static void close_gracefully(int fd)
+static void close_gracefully(conn_t *c)
 {
     char sink[1024];
     size_t drained = 0;
     struct timeval tv = { 1, 0 };
 
-    shutdown(fd, SHUT_WR);
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    tls_close(c);               /* TLS close_notify first, if HTTPS */
+    shutdown(c->fd, SHUT_WR);
+    setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     while (drained < 64 * 1024) {
-        ssize_t n = recv(fd, sink, sizeof sink, 0);
+        ssize_t n = recv(c->fd, sink, sizeof sink, 0);
         if (n <= 0)
             break;              /* client's FIN (0), timeout or error */
         drained += (size_t)n;
     }
-    close(fd);
+    close(c->fd);
 }
 
 /* Worker thread: serve one HTTP request on this connection, then close. */
@@ -172,13 +191,16 @@ static void *connection_thread(void *arg)
 
     log_info("[conn %lu] %s:%u connected", c->id, c->ip, c->port);
 
-    /* ~24 KB: on the heap rather than the thread's stack. */
+    if (tls_enabled() && tls_accept(c) < 0)
+        goto done;              /* handshake failed: nothing to reply on */
+
+    /* ~40 KB: on the heap rather than the thread's stack. */
     http_request_t *req = malloc(sizeof *req);
     if (!req) {
         log_error("[conn %lu] out of memory", c->id);
-        http_send_error(c->fd, 500, NULL, "Server out of memory.");
+        http_send_error(c, 500, NULL, "Server out of memory.");
     } else {
-        int rc = http_read_request(c->fd, req);
+        int rc = http_read_request(c, req);
         if (rc == 0) {
             int status = router_handle(c, req);
             if (status < 0)
@@ -190,7 +212,7 @@ static void *connection_thread(void *arg)
         } else if (rc > 0) {
             log_warn("[conn %lu] bad request -> %d %s",
                      c->id, rc, http_status_text(rc));
-            http_send_error(c->fd, rc, NULL, NULL);
+            http_send_error(c, rc, NULL, NULL);
         } else {
             /* Normal for browsers: they often open a spare connection in
              * advance and close it unused. */
@@ -199,7 +221,8 @@ static void *connection_thread(void *arg)
         free(req);
     }
 
-    close_gracefully(c->fd);
+done:
+    close_gracefully(c);
     log_info("[conn %lu] %s:%u disconnected", c->id, c->ip, c->port);
     free(c);
     release_slot();
@@ -293,6 +316,21 @@ static void wait_for_workers(void)
     pthread_mutex_unlock(&conn_lock);
 }
 
+/* Refuse a connection from the accept loop. Over plain HTTP the client gets
+ * a proper error page; over HTTPS we cannot speak HTTP before a TLS
+ * handshake (which we do not want to spend time on here), so just close. */
+static void refuse(conn_t *c, int status, const char *extra, const char *msg)
+{
+    if (!tls_enabled()) {
+        /* Short send timeout so a stuck client cannot block the accept
+         * loop; no graceful drain here for the same reason. */
+        set_socket_timeouts(c->fd);
+        http_send_error(c, status, extra, msg);
+    }
+    close(c->fd);
+    free(c);
+}
+
 int server_run(unsigned short port)
 {
     unsigned long next_id = 1;
@@ -303,8 +341,8 @@ int server_run(unsigned short port)
     if (lfd < 0)
         return -1;
 
-    log_info("listening on http://0.0.0.0:%u/ (max %d concurrent connections)",
-             port, MAX_CONNECTIONS);
+    log_info("listening on %s://0.0.0.0:%u/ (max %d concurrent connections)",
+             tls_enabled() ? "https" : "http", port, MAX_CONNECTIONS);
 
     while (!stop_requested) {
         struct sockaddr_in peer;
@@ -331,17 +369,23 @@ int server_run(unsigned short port)
         c->id   = next_id++;
         inet_ntop(AF_INET, &peer.sin_addr, c->ip, sizeof c->ip);
 
+        /* Per-IP rate limit (bonus; off unless RATE_LIMIT is set). */
+        if (!ratelimit_allow(peer.sin_addr.s_addr)) {
+            pthread_mutex_lock(&conn_lock);
+            total_rate_limited++;
+            pthread_mutex_unlock(&conn_lock);
+            log_warn("[conn %lu] %s:%u rate limited", c->id, c->ip, c->port);
+            refuse(c, 429, "Retry-After: 1\r\n",
+                   "You are sending requests too quickly. Please slow down.");
+            continue;
+        }
+
         if (!acquire_slot()) {
             log_warn("[conn %lu] %s:%u rejected: %d connections active",
                      c->id, c->ip, c->port, MAX_CONNECTIONS);
-            /* Short send timeout so a stuck client cannot block the accept
-             * loop; no graceful drain here for the same reason. */
-            set_socket_timeouts(cfd);
-            http_send_error(cfd, 503, "Retry-After: 5\r\n",
-                            "Too many students are connected right now. "
-                            "Please try again in a few seconds.");
-            close(cfd);
-            free(c);
+            refuse(c, 503, "Retry-After: 5\r\n",
+                   "Too many students are connected right now. "
+                   "Please try again in a few seconds.");
             continue;
         }
 

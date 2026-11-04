@@ -1,0 +1,31 @@
+<p class="crumbs"><a href="/teacher">&larr; Review queue</a></p>
+
+<div class="page-head">
+  <div>
+    <h1>{{title}}</h1>
+    <p class="muted">Asked by {{student}} on {{created}}</p>
+  </div>
+  <span class="state state-1">Needs review</span>
+</div>
+
+{{{alert}}}
+
+<section class="card">
+  <h2>Question</h2>
+  <div class="text">{{question}}</div>
+</section>
+
+<section class="card review-card">
+  <h2>Answer</h2>
+  <p class="muted">This is the AI draft. Send it unchanged to <strong>approve</strong> it
+  (<code>TEACHER_APPROVED</code>), or correct it first to send your <strong>edited</strong> version
+  (<code>TEACHER_EDITED</code>).</p>
+  <form method="post" action="/review">
+    <input type="hidden" name="id" value="{{id}}">
+    <textarea name="answer" rows="14" maxlength="{{maxlen}}" required>{{answer}}</textarea>
+    <div class="form-actions">
+      <button type="submit">Send answer to student</button>
+      <a href="/teacher">Cancel</a>
+    </div>
+  </form>
+</section>

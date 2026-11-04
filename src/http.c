@@ -39,10 +39,10 @@ const char *http_get_header(const http_request_t *req, const char *name)
 
 /* recv() wrapper: map errors to "what should the caller do".
  * Returns bytes read (>0), 0 on peer close, -1 timeout, -2 other error. */
-static ssize_t recv_some(int fd, char *buf, size_t len)
+static ssize_t recv_some(const conn_t *c, char *buf, size_t len)
 {
     for (;;) {
-        ssize_t n = recv(fd, buf, len, 0);
+        ssize_t n = conn_recv(c, buf, len);
         if (n >= 0)
             return n;
         if (errno == EINTR)
@@ -53,7 +53,7 @@ static ssize_t recv_some(int fd, char *buf, size_t len)
     }
 }
 
-int http_read_request(int fd, http_request_t *req)
+int http_read_request(const conn_t *c, http_request_t *req)
 {
     char  *raw = req->raw;
     size_t used = 0;
@@ -72,7 +72,7 @@ int http_read_request(int fd, http_request_t *req)
         if (used >= MAX_HEADER_SIZE)
             return 431;                         /* headers too large */
 
-        ssize_t n = recv_some(fd, raw + used, MAX_HEADER_SIZE - used);
+        ssize_t n = recv_some(c, raw + used, MAX_HEADER_SIZE - used);
         if (n == 0)
             return used == 0 ? -1 : 400;        /* closed mid-request */
         if (n == -1)
@@ -177,12 +177,12 @@ int http_read_request(int fd, http_request_t *req)
     if (clen > 0 && have_body == 0 && expect &&
         strcasecmp(expect, "100-continue") == 0) {
         static const char cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
-        send_all(fd, cont, sizeof cont - 1);
+        conn_send_all(c, cont, sizeof cont - 1);
     }
 
     /* --- 5. Receive the rest of the body ------------------------------- */
     while (have_body < clen) {
-        ssize_t n = recv_some(fd, body_start + have_body, clen - have_body);
+        ssize_t n = recv_some(c, body_start + have_body, clen - have_body);
         if (n == 0)
             return 400;         /* body shorter than Content-Length */
         if (n == -1)
@@ -307,7 +307,9 @@ const char *http_status_text(int status)
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
     case 408: return "Request Timeout";
+    case 409: return "Conflict";
     case 413: return "Content Too Large";
+    case 429: return "Too Many Requests";
     case 431: return "Request Header Fields Too Large";
     case 500: return "Internal Server Error";
     case 501: return "Not Implemented";
@@ -317,7 +319,7 @@ const char *http_status_text(int status)
     }
 }
 
-int http_send_response(int fd, int status, const char *content_type,
+int http_send_response(const conn_t *c, int status, const char *content_type,
                        const char *extra_headers,
                        const void *body, size_t body_len)
 {
@@ -356,18 +358,18 @@ int http_send_response(int fd, int status, const char *content_type,
         sb_append(&out, body, body_len);
 
     int rc = -1;
-    if (!out.oom && send_all(fd, out.data, out.len) >= 0)
+    if (!out.oom && conn_send_all(c, out.data, out.len) >= 0)
         rc = status;
     sb_free(&out);
     return rc;
 }
 
-int http_send_redirect(int fd, const char *location, const char *extra_headers)
+int http_send_redirect(const conn_t *c, const char *location, const char *extra_headers)
 {
     /* A CR or LF inside a header value would let an attacker end the
      * header early and inject their own (response splitting). */
     if (strpbrk(location, "\r\n"))
-        return http_send_error(fd, 500, NULL, "Invalid redirect target.");
+        return http_send_error(c, 500, NULL, "Invalid redirect target.");
 
     strbuf_t hdr;
     sb_init(&hdr);
@@ -377,13 +379,13 @@ int http_send_redirect(int fd, const char *location, const char *extra_headers)
 
     static const char body[] = "Redirecting...\n";
     int rc = hdr.oom ? -1
-           : http_send_response(fd, 302, "text/plain; charset=utf-8",
+           : http_send_response(c, 302, "text/plain; charset=utf-8",
                                 hdr.data, body, sizeof body - 1);
     sb_free(&hdr);
     return rc;
 }
 
-int http_send_error(int fd, int status, const char *extra_headers,
+int http_send_error(const conn_t *c, int status, const char *extra_headers,
                     const char *message)
 {
     const char *text = http_status_text(status);
@@ -404,10 +406,10 @@ int http_send_error(int fd, int status, const char *extra_headers,
 
     int rc;
     if (b.oom)
-        rc = http_send_response(fd, status, "text/plain; charset=utf-8",
+        rc = http_send_response(c, status, "text/plain; charset=utf-8",
                                 extra_headers, text, strlen(text));
     else
-        rc = http_send_response(fd, status, "text/html; charset=utf-8",
+        rc = http_send_response(c, status, "text/html; charset=utf-8",
                                 extra_headers, b.data, b.len);
     sb_free(&b);
     return rc;

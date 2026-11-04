@@ -7,3 +7,6 @@ sqms_client
 *.db-shm
 server.log
 *.pcap
+certs/
+.sqms_cookie
+tests/out/

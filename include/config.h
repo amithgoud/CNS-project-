@@ -85,11 +85,23 @@
 #define PASSWORD_MIN          6
 #define PASSWORD_MAX          128
 
-/* Questions. MAX_QUESTION_LEN is in bytes; URL-encoding can triple the
- * size on the wire, which still fits in MAX_BODY_SIZE. */
+/* Questions and answers. Lengths are in bytes; URL-encoding can triple
+ * the size on the wire, which still fits in MAX_BODY_SIZE. */
 #define MIN_QUESTION_LEN      5
 #define MAX_QUESTION_LEN      2000
+#define MAX_ANSWER_LEN        8000
 #define STUDENT_LIST_LIMIT    50        /* questions shown on the dashboard */
+#define TEACHER_LIST_LIMIT    50        /* rows in each teacher table */
+
+/* HTTPS (bonus, needs "make HTTPS=1"): certificate and key in PEM format.
+ * "make cert" creates a self-signed pair. */
+#define DEFAULT_HTTPS_PORT    8443
+#define TLS_CERT_FILE         "certs/server.crt"
+#define TLS_KEY_FILE          "certs/server.key"
+
+/* Per-IP rate limiting (bonus). Off unless RATE_LIMIT=<requests/second> is
+ * set in the environment; the burst allowance is twice that. */
+#define RATE_LIMIT_TABLE      1024      /* IP addresses tracked at once */
 
 /* Meta-refresh intervals (seconds) for pages that poll for changes. */
 #define POLL_LIST_SEC         10
